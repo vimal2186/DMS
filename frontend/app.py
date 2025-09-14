@@ -109,7 +109,8 @@ selected_action = st.sidebar.radio(
         "Manage Uploaded Files", 
         "Backup Data", 
         "Delete Document", 
-        "FAISS Management"
+        "FAISS Management",
+        "Chat with AI"
     ]
 )
 
@@ -483,3 +484,142 @@ elif selected_action == "Manage Uploaded Files":
     except requests.exceptions.RequestException as e:
         st.error(f"Error fetching uploaded files: {e}")
         st.error(f"Response content: {e.response.content}")
+
+elif selected_action == "Chat with AI":
+    st.header("💬 Chat with AI")
+    st.write("Engage in a conversation with the AI about your documents and other data.")
+
+    # Initialize session state for current conversation if not present
+    if 'current_conversation_id' not in st.session_state:
+        st.session_state['current_conversation_id'] = None
+    if 'current_conversation_title' not in st.session_state:
+        st.session_state['current_conversation_title'] = "New Chat"
+
+    # Sidebar for conversation selection
+    st.sidebar.subheader("Your Conversations")
+    
+    # Fetch conversations
+    conversations = []
+    try:
+        response = requests.get(f"{BACKEND_URL}/conversations/")
+        response.raise_for_status()
+        conversations = response.json()
+    except requests.exceptions.RequestException as e:
+        st.sidebar.error(f"Error fetching conversations: {e}")
+
+    conversation_options = {"New Chat": None}
+    if conversations:
+        for conv in conversations:
+            # Ensure _id is a string
+            conv_id = conv.get('_id')
+            if isinstance(conv_id, dict) and '$oid' in conv_id:
+                conv_id = conv_id['$oid']
+            elif not isinstance(conv_id, str):
+                continue # Skip malformed conversation IDs
+
+            conversation_options[f"{conv.get('title', 'Untitled')} (ID: {conv_id[:4]}...)"] = conv_id
+
+    # Selectbox for conversations
+    selected_conv_display = st.sidebar.selectbox(
+        "Select or create a conversation",
+        list(conversation_options.keys()),
+        index=0 if st.session_state['current_conversation_id'] is None else 
+              list(conversation_options.values()).index(st.session_state['current_conversation_id']) if st.session_state['current_conversation_id'] in list(conversation_options.values()) else 0
+    )
+    
+    new_selected_conv_id = conversation_options[selected_conv_display]
+
+    # Update current conversation if selection changes
+    if new_selected_conv_id != st.session_state['current_conversation_id']:
+        st.session_state['current_conversation_id'] = new_selected_conv_id
+        st.session_state['current_conversation_title'] = selected_conv_display.split(' (ID:')[0] if new_selected_conv_id else "New Chat"
+        st.rerun() # Rerun to load new conversation messages
+
+    # Display current conversation title
+    st.subheader(f"Conversation: {st.session_state['current_conversation_title']}")
+
+    # Chat message display area
+    chat_container = st.container(height=400, border=True)
+
+    # Fetch and display messages for the current conversation
+    messages = []
+    if st.session_state['current_conversation_id']:
+        try:
+            response = requests.get(f"{BACKEND_URL}/conversations/{st.session_state['current_conversation_id']}/messages")
+            response.raise_for_status()
+            messages = response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error fetching messages: {e}")
+    
+    for msg in messages:
+        with chat_container:
+            if msg['sender'] == 'user':
+                st.chat_message("user").write(msg['message'])
+            else:
+                st.chat_message("ai").write(msg['message'])
+
+    # Chat input
+    user_input = st.chat_input("Type your message here...")
+
+    if user_input:
+        with st.spinner("Sending message..."):
+            try:
+                conversation_id_to_use = st.session_state['current_conversation_id']
+                
+                # If "New Chat" is selected, create a new conversation first
+                if conversation_id_to_use is None:
+                    create_conv_response = requests.post(f"{BACKEND_URL}/conversations/", json={"title": "New Chat"})
+                    create_conv_response.raise_for_status()
+                    new_conv = create_conv_response.json()
+                    conversation_id_to_use = new_conv['id']
+                    st.session_state['current_conversation_id'] = conversation_id_to_use
+                    st.session_state['current_conversation_title'] = new_conv['title']
+                    st.success("New conversation created!")
+                
+                # Send message
+                message_payload = {"message": user_input}
+                response = requests.post(f"{BACKEND_URL}/conversations/{conversation_id_to_use}/messages", json=message_payload)
+                response.raise_for_status()
+                st.rerun() # Refresh to show new messages
+            except requests.exceptions.RequestException as e:
+                st.error(f"Error sending message: {e}")
+                st.error(f"Response content: {e.response.content}")
+
+    # Conversation management buttons
+    if st.session_state['current_conversation_id']:
+        st.markdown("---")
+        st.subheader("Manage Current Conversation")
+        col_del_conv, col_del_msg = st.columns(2)
+        with col_del_conv:
+            if st.button("Delete Current Conversation", help="This will delete the entire conversation history."):
+                if st.session_state['current_conversation_id']:
+                    try:
+                        response = requests.delete(f"{BACKEND_URL}/conversations/{st.session_state['current_conversation_id']}")
+                        response.raise_for_status()
+                        st.success("Conversation deleted successfully!")
+                        st.session_state['current_conversation_id'] = None
+                        st.session_state['current_conversation_title'] = "New Chat"
+                        st.rerun()
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"Error deleting conversation: {e}")
+                        st.error(f"Response content: {e.response.content}")
+        with col_del_msg:
+            if messages:
+                message_to_delete_display = st.selectbox(
+                    "Select a message to delete",
+                    [f"{msg['sender']}: {msg['message'][:50]}..." for msg in messages],
+                    key="delete_msg_select"
+                )
+                if st.button("Delete Selected Message"):
+                    selected_msg_index = [f"{msg['sender']}: {msg['message'][:50]}..." for msg in messages].index(message_to_delete_display)
+                    message_id_to_delete = messages[selected_msg_index]['_id']
+                    try:
+                        response = requests.delete(f"{BACKEND_URL}/messages/{message_id_to_delete}")
+                        response.raise_for_status()
+                        st.success("Message deleted successfully!")
+                        st.rerun()
+                    except requests.exceptions.RequestException as e:
+                        st.error(f"Error deleting message: {e}")
+                        st.error(f"Response content: {e.response.content}")
+            else:
+                st.info("No messages to delete in this conversation.")

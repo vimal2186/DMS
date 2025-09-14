@@ -28,3 +28,11 @@ def get_document_collection():
 # Dependency to get the database collection for reminders
 def get_reminder_collection():
     return db_connection.get_collection("reminders")
+
+# Dependency to get the database collection for chat messages
+def get_chat_message_collection():
+    return db_connection.get_collection("chat_messages")
+
+# Dependency to get the database collection for conversations
+def get_conversation_collection():
+    return db_connection.get_collection("conversations")

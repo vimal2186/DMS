@@ -46,3 +46,31 @@ class Reminder(BaseModel):
             ObjectId: str
         }
         populate_by_name = True # Allow population by field name or alias
+
+class ChatMessage(BaseModel):
+    id: Optional[PyObjectId] = Field(alias='_id', default=None)
+    conversation_id: PyObjectId
+    sender: str # 'user' or 'ai'
+    message: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            ObjectId: str
+        }
+        populate_by_name = True
+
+class Conversation(BaseModel):
+    id: Optional[PyObjectId] = Field(alias='_id', default=None)
+    user_id: Optional[str] = None # To link conversations to users if authentication is implemented
+    title: str = "New Chat"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            ObjectId: str
+        }
+        populate_by_name = True

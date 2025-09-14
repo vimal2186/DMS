@@ -51,22 +51,12 @@ def get_summary_and_category(text: str):
         print(f"Error getting summary from Ollama: {e}")
         return "Could not generate summary.", "Uncategorized"
 
-def answer_question(context: str, question: str):
+def answer_question(full_prompt: str):
     """
-    Answers a question based on the provided document context.
-    """
-    prompt = f"""
-    You are a helpful Q&A assistant. Based *only* on the document text provided below, answer the user's question. If the answer is not found in the text, say 'The answer is not available in this document.'
-
-    Document Text:
-    ---
-    {context}
-    ---
-    
-    Question: {question}
+    Generates an answer based on a comprehensive prompt that includes context and question.
     """
     try:
-        response = ollama.generate(model=OLLAMA_MODEL, prompt=prompt)
+        response = ollama.generate(model=OLLAMA_MODEL, prompt=full_prompt)
         return response['response']
     except Exception as e:
         print(f"Error getting answer from Ollama: {e}")

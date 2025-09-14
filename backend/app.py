@@ -5,8 +5,8 @@ from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Form, Que
 from fastapi.responses import JSONResponse
 from typing import List, Optional
 from datetime import datetime, date, time
-from .database import get_document_collection, get_reminder_collection
-from .models import Document, Reminder
+from .database import get_document_collection, get_reminder_collection, get_chat_message_collection, get_conversation_collection
+from .models import Document, Reminder, ChatMessage, Conversation, PyObjectId
 from .ocr import extract_text
 from .search import add_to_faiss_index, semantic_search, keyword_search, delete_from_faiss_index, clear_faiss_index, build_faiss_index
 from .scheduler import start_scheduler
@@ -333,3 +333,155 @@ async def backup_documents(
     except Exception as e:
         logger.error(f"Error backing up documents to {backup_path}: {e}")
         raise HTTPException(status_code=500, detail=f"Error backing up documents: {e}")
+
+# Chat Endpoints
+@app.post("/conversations/", response_model=Conversation)
+async def create_conversation(
+    title: Optional[str] = Body("New Chat", embed=True),
+    conversation_collection: Collection = Depends(get_conversation_collection)
+):
+    try:
+        conversation = Conversation(title=title)
+        conversation_dict = conversation.model_dump(by_alias=True)
+        if conversation_dict.get('_id') is None:
+            conversation_dict.pop('_id')
+        
+        result = conversation_collection.insert_one(conversation_dict)
+        response_content = json_serializable_doc({**conversation_dict, "id": str(result.inserted_id)})
+        return JSONResponse(
+            content=response_content,
+            status_code=201
+        )
+    except Exception as e:
+        logger.error(f"Error creating conversation: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creating conversation: {e}")
+
+@app.get("/conversations/", response_model=List[Conversation])
+async def get_conversations(
+    conversation_collection: Collection = Depends(get_conversation_collection)
+):
+    conversations = list(conversation_collection.find({}).sort("updated_at", -1))
+    serialized_conversations = [json_serializable_doc(conv) for conv in conversations]
+    return JSONResponse(content=serialized_conversations)
+
+@app.get("/conversations/{conversation_id}/messages", response_model=List[ChatMessage])
+async def get_conversation_messages(
+    conversation_id: str,
+    chat_message_collection: Collection = Depends(get_chat_message_collection)
+):
+    messages = list(chat_message_collection.find({"conversation_id": ObjectId(conversation_id)}).sort("timestamp", 1))
+    serialized_messages = [json_serializable_doc(msg) for msg in messages]
+    return JSONResponse(content=serialized_messages)
+
+@app.post("/conversations/{conversation_id}/messages", response_model=ChatMessage)
+async def send_chat_message(
+    conversation_id: str,
+    message: str = Body(..., embed=True),
+    chat_message_collection: Collection = Depends(get_chat_message_collection),
+    conversation_collection: Collection = Depends(get_conversation_collection),
+    doc_collection: Collection = Depends(get_document_collection) # For RAG
+):
+    try:
+        # Check if conversation exists
+        conversation = conversation_collection.find_one({"_id": ObjectId(conversation_id)})
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        # Store user message
+        user_chat_message = ChatMessage(conversation_id=ObjectId(conversation_id), sender="user", message=message)
+        user_message_dict = user_chat_message.model_dump(by_alias=True)
+        if user_message_dict.get('_id') is None:
+            user_message_dict.pop('_id')
+        user_result = chat_message_collection.insert_one(user_message_dict)
+        
+        # Update conversation timestamp
+        conversation_collection.update_one(
+            {"_id": ObjectId(conversation_id)},
+            {"$set": {"updated_at": datetime.utcnow()}}
+        )
+
+        # --- AI Response Logic (RAG + LLM) ---
+        # 1. Retrieve relevant documents based on user query
+        relevant_docs = semantic_search(message, k=3) # Use semantic search for context
+        context_texts = [doc.get('extracted_text', '') for doc in relevant_docs if doc.get('extracted_text')]
+        
+        # Combine chat history with document context
+        chat_history = list(chat_message_collection.find({"conversation_id": ObjectId(conversation_id)}).sort("timestamp", 1))
+        
+        full_context = "\n".join(context_texts)
+        
+        # Construct prompt for LLM
+        history_prompt = "\n".join([f"{msg['sender']}: {msg['message']}" for msg in chat_history])
+        
+        ai_prompt = f"""
+        You are an AI assistant for a Document Management System.
+        Answer the user's question based on the provided documents and chat history.
+        If the answer is not explicitly in the documents, use your general knowledge but prioritize the documents.
+        If you cannot find a relevant answer, state that you don't have enough information.
+
+        --- Documents Context ---
+        {full_context if full_context else "No relevant documents found."}
+        --- End Documents Context ---
+
+        --- Chat History ---
+        {history_prompt}
+        --- End Chat History ---
+
+        User: {message}
+        AI:
+        """
+        
+        ai_response_text = answer_question(ai_prompt, message) # Re-using answer_question, but passing full prompt
+
+        # Store AI message
+        ai_chat_message = ChatMessage(conversation_id=ObjectId(conversation_id), sender="ai", message=ai_response_text)
+        ai_message_dict = ai_chat_message.model_dump(by_alias=True)
+        if ai_message_dict.get('_id') is None:
+            ai_message_dict.pop('_id')
+        ai_result = chat_message_collection.insert_one(ai_message_dict)
+
+        response_content = json_serializable_doc({**ai_message_dict, "id": str(ai_result.inserted_id)})
+        return JSONResponse(
+            content=response_content,
+            status_code=201
+        )
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Error sending chat message: {e}")
+        raise HTTPException(status_code=500, detail=f"Error sending chat message: {e}")
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    conversation_collection: Collection = Depends(get_conversation_collection),
+    chat_message_collection: Collection = Depends(get_chat_message_collection)
+):
+    try:
+        # Delete all messages associated with the conversation
+        chat_message_collection.delete_many({"conversation_id": ObjectId(conversation_id)})
+        
+        # Delete the conversation itself
+        result = conversation_collection.delete_one({"_id": ObjectId(conversation_id)})
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return JSONResponse(content={"message": f"Conversation {conversation_id} and its messages deleted successfully"})
+    except Exception as e:
+        logger.error(f"Error deleting conversation {conversation_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting conversation: {e}")
+
+@app.delete("/messages/{message_id}")
+async def delete_chat_message(
+    message_id: str,
+    chat_message_collection: Collection = Depends(get_chat_message_collection)
+):
+    try:
+        result = chat_message_collection.delete_one({"_id": ObjectId(message_id)})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Chat message not found")
+        return JSONResponse(content={"message": f"Chat message {message_id} deleted successfully"})
+    except Exception as e:
+        logger.error(f"Error deleting chat message {message_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting chat message: {e}")
