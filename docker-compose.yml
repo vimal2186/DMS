@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: dms_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    restart: always
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: dms_backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Ensure the backend connects to the MongoDB service by its service name
+      MONGO_URI: mongodb://mongodb:27017/
+      DATABASE_NAME: dms_db
+      # Add any other environment variables your backend needs, e.g., for Ollama model
+      # OLLAMA_HOST: http://ollama:11434 # If Ollama is also containerized
+    volumes:
+      - .:/app # Mount the current directory to allow code changes without rebuilding image
+      - uploads_data:/app/uploads # Persistent storage for uploaded files
+      - faiss_data:/app/data # Persistent storage for FAISS index
+    depends_on:
+      - mongodb
+    restart: always
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: dms_frontend
+    ports:
+      - "8501:8501"
+    environment:
+      # Ensure the frontend connects to the backend service by its service name
+      BACKEND_URL: http://backend:8000
+    volumes:
+      - .:/app # Mount the current directory to allow code changes without rebuilding image
+    depends_on:
+      - backend
+    restart: always
+
+volumes:
+  mongodb_data:
+  uploads_data:
+  faiss_data:

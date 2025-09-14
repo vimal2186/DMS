@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+pydantic
+pymongo
+python-multipart
+pytesseract
+opencv-python
+pdfplumber
+python-docx
+pandas
+openpyxl
+faiss-cpu
+streamlit
+schedule
+plyer
+ollama
+PyMuPDF # Added for advanced PDF OCR
