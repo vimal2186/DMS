@@ -56,6 +56,7 @@ async def upload_document(
     category: Optional[str] = Form(None),
     tags: Optional[List[str]] = Form(None, alias="tags[]"),
     password: Optional[str] = Form(None), # New: Optional password field
+    original_filepath: Optional[str] = Form(None), # New: Original file path on user's system
     doc_collection: Collection = Depends(get_document_collection)
 ):
     try:
@@ -73,6 +74,7 @@ async def upload_document(
         document = Document(
             filename=file.filename,
             filepath=file_path,
+            original_filepath=original_filepath, # Store the original file path
             category=final_category,
             tags=tags if tags else [],
             extracted_text=extracted_text,
@@ -91,6 +93,13 @@ async def upload_document(
         # Add to FAISS index
         # Use the generated _id from the insert result
         add_to_faiss_index(str(result.inserted_id), extracted_text)
+
+        # After successful indexing, delete the physical file
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"Deleted uploaded file after indexing: {file_path}")
+        else:
+            logger.warning(f"File not found for deletion after indexing: {file_path}")
 
         # Ensure the content is fully JSON-serializable before returning
         response_content = json_serializable_doc({**document_dict, "id": str(result.inserted_id)})
@@ -195,6 +204,16 @@ async def question_answering(
     
     return JSONResponse(content={"answer": answer})
 
+@app.get("/files/uploaded")
+async def get_uploaded_files():
+    """Lists all files currently in the 'uploads' directory."""
+    uploaded_files = []
+    for filename in os.listdir("uploads"):
+        filepath = os.path.join("uploads", filename)
+        if os.path.isfile(filepath):
+            uploaded_files.append({"filename": filename, "filepath": filepath})
+    return JSONResponse(content=uploaded_files)
+
 @app.post("/reminders/", response_model=Reminder)
 async def create_reminder(
     document_id: str = Body(...),
@@ -238,6 +257,21 @@ async def get_reminders(reminder_collection: Collection = Depends(get_reminder_c
     serialized_reminders = [json_serializable_doc(rem) for rem in reminders]
     return JSONResponse(content=serialized_reminders)
 
+@app.delete("/files/uploaded/{filename}")
+async def delete_uploaded_file(filename: str):
+    """Deletes a specific file from the 'uploads' directory."""
+    file_path = os.path.join("uploads", filename)
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+            logger.info(f"Manually deleted file from uploads: {file_path}")
+            return JSONResponse(content={"message": f"File '{filename}' deleted successfully from uploads."})
+        except Exception as e:
+            logger.error(f"Error deleting file '{filename}' from uploads: {e}")
+            raise HTTPException(status_code=500, detail=f"Error deleting file: {e}")
+    else:
+        raise HTTPException(status_code=404, detail=f"File '{filename}' not found in uploads.")
+
 @app.delete("/reminders/{reminder_id}")
 async def delete_reminder(reminder_id: str, reminder_collection: Collection = Depends(get_reminder_collection)):
     try:
@@ -269,3 +303,33 @@ async def update_reminder_status(
     except Exception as e:
         logger.error(f"Error updating reminder {reminder_id} status: {e}")
         raise HTTPException(status_code=500, detail=f"Error updating reminder status: {e}")
+
+@app.post("/backup/documents")
+async def backup_documents(
+    backup_path: str = Body(..., embed=True),
+    doc_collection: Collection = Depends(get_document_collection)
+):
+    """
+    Backs up all indexed documents (metadata and extracted text) to a specified directory.
+    The backup path must be accessible by the Docker container.
+    """
+    try:
+        # Ensure the backup directory exists within the container's accessible paths
+        # For a Dockerized environment, this path would typically be a mounted volume.
+        os.makedirs(backup_path, exist_ok=True)
+
+        documents = list(doc_collection.find({}))
+        serialized_docs = [json_serializable_doc(doc) for doc in documents]
+
+        backup_filename = f"dms_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        full_backup_path = os.path.join(backup_path, backup_filename)
+
+        with open(full_backup_path, "w", encoding="utf-8") as f:
+            json.dump(serialized_docs, f, ensure_ascii=False, indent=4)
+
+        logger.info(f"Successfully backed up all documents to {full_backup_path}")
+        return JSONResponse(content={"message": f"All indexed documents backed up successfully to {full_backup_path}"})
+
+    except Exception as e:
+        logger.error(f"Error backing up documents to {backup_path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error backing up documents: {e}")

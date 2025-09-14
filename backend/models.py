@@ -17,6 +17,7 @@ class Document(BaseModel):
     id: Optional[PyObjectId] = Field(alias='_id', default=None)
     filename: str
     filepath: str
+    original_filepath: Optional[str] = None # New field to store the original path on the user's system
     upload_date: datetime = Field(default_factory=datetime.utcnow)
     category: Optional[str] = "Uncategorized"
     tags: Optional[List[str]] = []

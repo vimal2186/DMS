@@ -46,19 +46,78 @@ def get_documents():
         return []
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Document Management System", layout="wide")
+st.set_page_config(
+    page_title="Document Management System", 
+    layout="wide", 
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://www.extremely.cool.app/help',
+        'Report a bug': "https://www.extremely.cool.app/bug",
+        'About': "# This is a header. This is an *extremely* cool app!"
+    }
+)
+
+# Custom CSS for a cleaner look
+st.markdown("""
+    <style>
+    .main .block-container {
+        padding-top: 2rem;
+        padding-right: 2rem;
+        padding-left: 2rem;
+        padding-bottom: 2rem;
+    }
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+        border-radius: 5px;
+        border: none;
+        padding: 10px 20px;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+        font-size: 16px;
+        margin: 4px 2px;
+        cursor: pointer;
+        -webkit-transition-duration: 0.4s; /* Safari */
+        transition-duration: 0.4s;
+    }
+    .stButton>button:hover {
+        background-color: #45a049;
+        color: white;
+    }
+    .stExpander {
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 st.title("📄 Document Management System")
 
 # --- Sidebar ---
 st.sidebar.header("Actions")
-selected_action = st.sidebar.radio("Choose an action", ["Dashboard", "Upload Document", "Search Documents", "Document Q&A", "Manage Reminders", "Delete Document", "FAISS Management"])
+selected_action = st.sidebar.radio(
+    "Choose an action", 
+    [
+        "Dashboard", 
+        "Upload Document", 
+        "Search Documents", 
+        "Document Q&A", 
+        "Manage Reminders", 
+        "Manage Uploaded Files", 
+        "Backup Data", 
+        "Delete Document", 
+        "FAISS Management"
+    ]
+)
 
 # --- Main Content ---
 
 if selected_action == "Dashboard":
-    st.header("Dashboard")
-    st.write("Welcome to your DMS. Here's a quick overview:")
+    st.header("📊 Dashboard")
+    st.write("Welcome to your DMS. Here's a quick overview of your documents and activities.")
     
     st.subheader("Recent Documents")
     documents = get_documents() # Now get_documents returns already processed and valid documents
@@ -67,10 +126,11 @@ if selected_action == "Dashboard":
         df['upload_date'] = pd.to_datetime(df['upload_date'])
         st.dataframe(df[['filename', 'category', 'summary', 'upload_date']].sort_values(by="upload_date", ascending=False).head(10))
     else:
-        st.info("No documents uploaded yet.")
+        st.info("No documents uploaded yet. Start by uploading one!")
 
 elif selected_action == "Delete Document":
-    st.header("Delete a Document")
+    st.header("🗑️ Delete a Document")
+    st.write("Permanently remove a document from the system and its associated data.")
     documents = get_documents() # Now get_documents returns already processed and valid documents
     if documents:
         # No need for valid_documents filter here, as get_documents already handles it
@@ -80,14 +140,14 @@ elif selected_action == "Delete Document":
         doc_options = {f"{doc['filename']} (Uploaded: {doc['upload_date']})": doc['_id'] for doc in documents}
         selected_doc_display = st.selectbox("Select a document to delete", list(doc_options.keys()))
         
-        if st.button("Confirm Delete"):
+        if st.button("Confirm Delete", help="This action cannot be undone."):
             if selected_doc_display:
                 doc_id_to_delete = doc_options[selected_doc_display]
                 # doc_id_to_delete should always be valid here due to get_documents processing
                 try:
                     response = requests.delete(f"{BACKEND_URL}/documents/{doc_id_to_delete}")
                     response.raise_for_status()
-                    st.success(f"Document {selected_doc_display} deleted successfully!")
+                    st.success(f"Document '{selected_doc_display}' deleted successfully!")
                     st.rerun() # Refresh the page to update the document list
                 except requests.exceptions.RequestException as e:
                     st.error(f"Error deleting document: {e}")
@@ -96,28 +156,32 @@ elif selected_action == "Delete Document":
         st.info("No documents to delete.")
 
 elif selected_action == "Upload Document":
-    st.header("Upload a New Document")
+    st.header("⬆️ Upload a New Document")
+    st.write("Upload a document to be indexed and made searchable.")
     
     with st.form("upload_form", clear_on_submit=True):
         uploaded_file = st.file_uploader("Choose a file", type=['pdf', 'png', 'jpg', 'jpeg', 'docx', 'xlsx', 'xls', 'csv'])
-        category = st.text_input("Category (optional)")
-        tags = st.text_input("Tags (comma-separated, optional)")
-        pdf_password = st.text_input("PDF Password (if applicable, optional)", type="password") # New: Password input
+        original_filepath = st.text_input("Original File Path (e.g., C:\\Users\\YourUser\\Documents\\file.pdf)", help="Enter the full path where this file is located on your computer. This path will be stored for your reference.")
+        category = st.text_input("Category (optional)", help="Assign a category to your document for better organization.")
+        tags = st.text_input("Tags (comma-separated, optional)", help="Add keywords to easily find your document later.")
+        pdf_password = st.text_input("PDF Password (if applicable, optional)", type="password", help="If your PDF is password-protected, enter the password here.") # New: Password input
         
-        submitted = st.form_submit_button("Upload")
+        submitted = st.form_submit_button("Upload Document")
         
         if submitted and uploaded_file is not None:
             files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
             data = {'category': category, 'tags': tags.split(',')}
             if pdf_password: # Add password to data if provided
                 data['password'] = pdf_password
+            if original_filepath: # Add original_filepath to data if provided
+                data['original_filepath'] = original_filepath
             
-            with st.spinner("Uploading and processing document..."):
+            with st.spinner("Uploading and processing document... This may take a moment."):
                 try:
                     response = requests.post(f"{BACKEND_URL}/upload/", files=files, data=data)
                     response.raise_for_status()
                     uploaded_document = response.json()
-                    st.success("Document uploaded successfully!")
+                    st.success("Document uploaded successfully! The original file has been deleted from the 'uploads' folder.")
                     
                     # Store uploaded document and potential reminders in session state
                     st.session_state['last_uploaded_document'] = uploaded_document
@@ -133,7 +197,7 @@ elif selected_action == "Upload Document":
     
     # Display potential reminders if any were found in the last upload
     if 'potential_reminders_to_create' in st.session_state and st.session_state['potential_reminders_to_create']:
-        st.subheader("AI Suggested Reminders")
+        st.subheader("🔔 AI Suggested Reminders")
         st.write("The AI has identified potential reminders in your document. Select which ones to create:")
         
         # Use a list to store selected reminders from checkboxes
@@ -174,7 +238,8 @@ elif selected_action == "Upload Document":
                 st.warning("No reminders selected to create.")
 
 elif selected_action == "Search Documents":
-    st.header("Search Documents")
+    st.header("🔍 Search Documents")
+    st.write("Find documents using keyword or semantic search.")
     
     search_query = st.text_input("Enter your search query")
     search_type = st.selectbox("Search Type", ["keyword", "semantic"])
@@ -182,30 +247,34 @@ elif selected_action == "Search Documents":
     if st.button("Search"):
         if search_query:
             params = {'query': search_query, 'search_type': search_type}
-            try:
-                response = requests.get(f"{BACKEND_URL}/search/", params=params)
-                response.raise_for_status()
-                results = response.json()
-                
-                if results:
-                    st.subheader("Search Results")
-                    for result in results:
-                        with st.expander(f"{result['filename']} (Category: {result.get('category', 'N/A')})"):
-                            st.write(f"**Summary:** {result.get('summary', 'N/A')}")
-                            st.write(f"**Upload Date:** {result['upload_date']}")
-                            st.write(f"**Tags:** {', '.join(result.get('tags', []))}")
-                            st.text_area("Extracted Text", result.get('extracted_text', ''), height=200)
-                else:
-                    st.info("No results found.")
-            except requests.exceptions.RequestException as e:
-                st.error(f"Error during search: {e}")
+            with st.spinner("Searching documents..."):
+                try:
+                    response = requests.get(f"{BACKEND_URL}/search/", params=params)
+                    response.raise_for_status()
+                    results = response.json()
+                    
+                    if results:
+                        st.subheader("Search Results")
+                        for result in results:
+                            with st.expander(f"📄 {result['filename']} (Category: {result.get('category', 'N/A')})"):
+                                st.write(f"**Summary:** {result.get('summary', 'N/A')}")
+                                st.write(f"**Upload Date:** {result['upload_date']}")
+                                if result.get('original_filepath'):
+                                    st.write(f"**Original Location:** `{result['original_filepath']}`")
+                                st.write(f"**Tags:** {', '.join(result.get('tags', []))}")
+                                st.text_area("Extracted Text", result.get('extracted_text', ''), height=200)
+                    else:
+                        st.info("No results found for your query.")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Error during search: {e}")
 
 elif selected_action == "Document Q&A":
-    st.header("Ask a Question About a Document")
+    st.header("❓ Ask a Question About a Document")
+    st.write("Get answers directly from your indexed documents using AI.")
     
     documents = get_documents() # Now get_documents returns already processed and valid documents
     if not documents:
-        st.warning("Please upload a document first.")
+        st.warning("Please upload a document first to use this feature.")
     else:
         # Sort documents by upload_date for easier selection of recent ones
         documents.sort(key=lambda x: datetime.fromisoformat(x['upload_date']) if isinstance(x['upload_date'], str) else x['upload_date'], reverse=True)
@@ -216,6 +285,11 @@ elif selected_action == "Document Q&A":
         # Extract the actual doc_id from the selected display string
         selected_doc_id = doc_options[selected_doc_display]
         
+        # Display original file path if available
+        selected_document = next((doc for doc in documents if doc['_id'] == selected_doc_id), None)
+        if selected_document and selected_document.get('original_filepath'):
+            st.info(f"**Original File Location:** `{selected_document['original_filepath']}`")
+
         question = st.text_input("Your Question")
         
         if st.button("Ask"):
@@ -235,7 +309,8 @@ elif selected_action == "Document Q&A":
                         st.error(f"Response content: {e.response.content}")
 
 elif selected_action == "Manage Reminders":
-    st.header("Manage Reminders")
+    st.header("⏰ Manage Reminders")
+    st.write("Set and manage reminders for your documents.")
     
     st.subheader("Create a New Reminder")
     
@@ -258,13 +333,15 @@ elif selected_action == "Manage Reminders":
                 "message": message
             }
             
-            try:
-                response = requests.post(f"{BACKEND_URL}/reminders/", json=reminder_data)
-                response.raise_for_status()
-                st.success("Reminder set successfully!")
-            except requests.exceptions.RequestException as e:
-                st.error(f"Error setting reminder: {e}")
-                st.error(f"Response content: {e.response.content}")
+            with st.spinner("Setting reminder..."):
+                try:
+                    response = requests.post(f"{BACKEND_URL}/reminders/", json=reminder_data)
+                    response.raise_for_status()
+                    st.success("Reminder set successfully!")
+                    st.rerun()
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Error setting reminder: {e}")
+                    st.error(f"Response content: {e.response.content}")
 
     st.subheader("Upcoming Reminders")
     try:
@@ -326,27 +403,83 @@ elif selected_action == "Manage Reminders":
         st.error(f"Error fetching reminders: {e}")
 
 elif selected_action == "FAISS Management":
-    st.header("FAISS Index Management")
-    st.write("Manage the FAISS index for semantic search.")
+    st.header("⚙️ FAISS Index Management")
+    st.write("Manage the FAISS index for semantic search. Rebuilding is recommended after significant data changes.")
 
-    if st.button("Clear FAISS Index"):
-        with st.spinner("Clearing FAISS index..."):
-            try:
-                response = requests.post(f"{BACKEND_URL}/faiss/clear")
-                response.raise_for_status()
-                st.success("FAISS index cleared successfully!")
-                st.rerun()
-            except requests.exceptions.RequestException as e:
-                st.error(f"Error clearing FAISS index: {e}")
-                st.error(f"Response content: {e.response.content}")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Clear FAISS Index", help="This will remove all documents from the semantic search index."):
+            with st.spinner("Clearing FAISS index..."):
+                try:
+                    response = requests.post(f"{BACKEND_URL}/faiss/clear")
+                    response.raise_for_status()
+                    st.success("FAISS index cleared successfully!")
+                    st.rerun()
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Error clearing FAISS index: {e}")
+                    st.error(f"Response content: {e.response.content}")
+    with col2:
+        if st.button("Rebuild FAISS Index", help="This will re-index all documents from the database for semantic search."):
+            with st.spinner("Rebuilding FAISS index from all documents..."):
+                try:
+                    response = requests.post(f"{BACKEND_URL}/faiss/rebuild")
+                    response.raise_for_status()
+                    st.success("FAISS index rebuilt successfully!")
+                    st.rerun()
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Error rebuilding FAISS index: {e}")
+                    st.error(f"Response content: {e.response.content}")
 
-    if st.button("Rebuild FAISS Index"):
-        with st.spinner("Rebuilding FAISS index from all documents..."):
-            try:
-                response = requests.post(f"{BACKEND_URL}/faiss/rebuild")
-                response.raise_for_status()
-                st.success("FAISS index rebuilt successfully!")
-                st.rerun()
-            except requests.exceptions.RequestException as e:
-                st.error(f"Error rebuilding FAISS index: {e}")
-                st.error(f"Response content: {e.response.content}")
+elif selected_action == "Backup Data":
+    st.header("📦 Backup Indexed Documents")
+    st.write("You can backup all indexed document metadata and extracted text to a specified folder on your system.")
+    st.warning("Note: For this feature to work, the backup directory you specify must be accessible by the Docker container. This typically means it needs to be a mounted volume in your Docker setup.")
+
+    backup_folder_path = st.text_input("Enter the backup folder path (e.g., /app/backups or C:\\Users\\YourUser\\DMS_Backups)", help="This path should be accessible from within the Docker container. If running locally, ensure it's a mounted volume.")
+
+    if st.button("Initiate Backup"):
+        if backup_folder_path:
+            with st.spinner("Backing up documents..."):
+                try:
+                    response = requests.post(f"{BACKEND_URL}/backup/documents", json={"backup_path": backup_folder_path})
+                    response.raise_for_status()
+                    st.success(response.json().get("message", "Backup initiated successfully!"))
+                except requests.exceptions.RequestException as e:
+                    error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                    st.error(f"Error during backup: {error_detail}")
+                    st.error(f"Response content: {e.response.content}")
+        else:
+            st.warning("Please provide a backup folder path.")
+
+elif selected_action == "Manage Uploaded Files":
+    st.header("📁 Manage Uploaded Files")
+    st.write("Here you can view and manually delete files that are currently in the 'uploads' directory. These are temporary files that were not automatically deleted or are awaiting processing.")
+
+    try:
+        response = requests.get(f"{BACKEND_URL}/files/uploaded")
+        response.raise_for_status()
+        uploaded_files = response.json()
+
+        if uploaded_files:
+            st.subheader("Files in 'uploads' directory:")
+            for file_info in uploaded_files:
+                filename = file_info['filename']
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"- {filename}")
+                with col2:
+                    if st.button(f"Delete {filename}", key=f"delete_uploaded_{filename}", help="Permanently delete this file from the 'uploads' directory."):
+                        try:
+                            delete_response = requests.delete(f"{BACKEND_URL}/files/uploaded/{filename}")
+                            delete_response.raise_for_status()
+                            st.success(f"File '{filename}' deleted successfully!")
+                            st.rerun() # Refresh the page to update the list
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"Error deleting file '{filename}': {e}")
+                            st.error(f"Response content: {e.response.content}")
+        else:
+            st.info("No files found in the 'uploads' directory.")
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching uploaded files: {e}")
+        st.error(f"Response content: {e.response.content}")
