@@ -2,18 +2,39 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+import os 
+import json 
 
 # --- Configuration ---
-BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_URL = "http://127.0.0.1:8000" # Default for local development
+
+# Attempt to get backend URL from environment variable for Render deployment
+if "BACKEND_URL" in os.environ:
+    BACKEND_URL = os.environ["BACKEND_URL"]
+# No need for st.secrets check if primarily using environment variables or local default
+
+# --- Session State Initialization ---
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+if 'token' not in st.session_state:
+    st.session_state['token'] = None
+if 'username' not in st.session_state:
+    st.session_state['username'] = None
 
 # --- Helper Functions ---
+def get_auth_headers():
+    """Returns authorization headers if a token is present in session state."""
+    if st.session_state['token']:
+        return {"Authorization": f"Bearer {st.session_state['token']}"}
+    return {}
+
 def get_documents():
     """
     Fetches all documents from the backend and ensures their _id is a valid string.
     Filters out documents with invalid or missing _id.
     """
     try:
-        response = requests.get(f"{BACKEND_URL}/documents/")
+        response = requests.get(f"{BACKEND_URL}/documents/", headers=get_auth_headers())
         response.raise_for_status()
         documents = response.json()
         
@@ -33,16 +54,16 @@ def get_documents():
                     doc['_id'] = doc['id']
                 else:
                     # If no valid _id or id, skip this document
-                    st.warning(f"Skipping document with invalid or missing ID: {doc.get('filename', 'Unknown')}")
+                    st.warning(f"A document named '{doc.get('filename', 'Unknown')}' could not be loaded due to a missing or invalid ID. Please check the backend logs for details.")
                     continue
                 
                 processed_and_valid_documents.append(doc)
             else:
-                st.warning(f"Skipping malformed document entry (not a dictionary): {doc}")
+                st.warning(f"A document entry could not be loaded as it was malformed. Please check the backend logs for details.")
         
         return processed_and_valid_documents
     except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching documents: {e}")
+        st.error(f"Failed to connect to the backend or fetch documents: {e}. Please ensure the backend server is running and accessible.")
         return []
 
 # --- Streamlit UI ---
@@ -96,6 +117,61 @@ st.markdown("""
 
 st.title("📄 Document Management System")
 
+# --- Authentication Section ---
+if not st.session_state['logged_in']:
+    st.sidebar.subheader("Authentication")
+    auth_choice = st.sidebar.radio("Choose", ["Login", "Register"])
+
+    if auth_choice == "Login":
+        with st.sidebar.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Login")
+
+            if submitted:
+                try:
+                    response = requests.post(
+                        f"{BACKEND_URL}/token", 
+                        data={"username": username, "password": password}
+                    )
+                    response.raise_for_status()
+                    token_data = response.json()
+                    st.session_state['token'] = token_data['access_token']
+                    st.session_state['username'] = username
+                    st.session_state['logged_in'] = True
+                    st.sidebar.success("Logged in successfully!")
+                    st.rerun()
+                except requests.exceptions.RequestException as e:
+                    error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                    st.sidebar.error(f"Login failed: {error_detail}. Please check your username and password, or register if you don't have an account.")
+    elif auth_choice == "Register":
+        with st.sidebar.form("register_form"):
+            new_username = st.text_input("New Username")
+            new_password = st.text_input("New Password", type="password")
+            new_email = st.text_input("Email")
+            submitted = st.form_submit_button("Register")
+
+            if submitted:
+                try:
+                    response = requests.post(
+                        f"{BACKEND_URL}/register/", 
+                        data={"username": new_username, "password": new_password, "email": new_email}
+                    )
+                    response.raise_for_status()
+                    st.sidebar.success("Registration successful! You can now log in with your new account.")
+                    st.rerun()
+                except requests.exceptions.RequestException as e:
+                    error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                    st.sidebar.error(f"Registration failed: {error_detail}. Please try again with different credentials.")
+    st.stop() # Stop execution if not logged in
+else:
+    st.sidebar.success(f"Logged in as: {st.session_state['username']}")
+    if st.sidebar.button("Logout"):
+        st.session_state['logged_in'] = False
+        st.session_state['token'] = None
+        st.session_state['username'] = None
+        st.rerun()
+
 # --- Sidebar ---
 st.sidebar.header("Actions")
 selected_action = st.sidebar.radio(
@@ -110,7 +186,8 @@ selected_action = st.sidebar.radio(
         "Backup Data", 
         "Delete Document", 
         "FAISS Management",
-        "Chat with AI"
+        "Chat with AI",
+        "Admin Feedback" # New admin feature
     ]
 )
 
@@ -145,55 +222,86 @@ elif selected_action == "Delete Document":
             if selected_doc_display:
                 doc_id_to_delete = doc_options[selected_doc_display]
                 # doc_id_to_delete should always be valid here due to get_documents processing
-                try:
-                    response = requests.delete(f"{BACKEND_URL}/documents/{doc_id_to_delete}")
-                    response.raise_for_status()
-                    st.success(f"Document '{selected_doc_display}' deleted successfully!")
-                    st.rerun() # Refresh the page to update the document list
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Error deleting document: {e}")
-                    st.error(f"Response content: {e.response.content}")
+                with st.spinner(f"Deleting document '{selected_doc_display}'..."): # Added spinner
+                    try:
+                        response = requests.delete(f"{BACKEND_URL}/documents/{doc_id_to_delete}", headers=get_auth_headers())
+                        response.raise_for_status()
+                        st.success(f"Document '{selected_doc_display}' deleted successfully!")
+                        st.rerun() # Refresh the page to update the document list
+                    except requests.exceptions.RequestException as e:
+                        error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                        st.error(f"Failed to delete document: {error_detail}. Please try again or check backend logs.")
+                        st.error(f"Response content: {e.response.content}")
     else:
         st.info("No documents to delete.")
 
 elif selected_action == "Upload Document":
-    st.header("⬆️ Upload a New Document")
-    st.write("Upload a document to be indexed and made searchable.")
+    st.header("⬆️ Upload New Document(s)")
+    st.write("Upload one or more documents to be indexed and made searchable.")
     
     with st.form("upload_form", clear_on_submit=True):
-        uploaded_file = st.file_uploader("Choose a file", type=['pdf', 'png', 'jpg', 'jpeg', 'docx', 'xlsx', 'xls', 'csv'])
-        original_filepath = st.text_input("Original File Path (e.g., C:\\Users\\YourUser\\Documents\\file.pdf)", help="Enter the full path where this file is located on your computer. This path will be stored for your reference.")
-        category = st.text_input("Category (optional)", help="Assign a category to your document for better organization.")
-        tags = st.text_input("Tags (comma-separated, optional)", help="Add keywords to easily find your document later.")
-        pdf_password = st.text_input("PDF Password (if applicable, optional)", type="password", help="If your PDF is password-protected, enter the password here.") # New: Password input
+        uploaded_files = st.file_uploader("Choose file(s)", type=['pdf', 'png', 'jpg', 'jpeg', 'docx', 'xlsx', 'xls', 'csv'], accept_multiple_files=True)
         
-        submitted = st.form_submit_button("Upload Document")
+        # Collect original file paths for each uploaded file
+        original_filepaths = []
+        if uploaded_files:
+            st.subheader("Original File Paths (Optional)")
+            st.write("Enter the full path where each file is located on your computer. This path will be stored for your reference.")
+            for i, file in enumerate(uploaded_files):
+                original_filepaths.append(st.text_input(f"Path for {file.name}", key=f"original_path_{i}"))
+
+        category = st.text_input("Category (optional, applies to all files)", help="Assign a category to all documents for better organization.")
+        tags = st.text_input("Tags (comma-separated, optional, applies to all files)", help="Add keywords to easily find your documents later.")
+        pdf_password = st.text_input("PDF Password (if applicable, optional, applies to all PDF files)", type="password", help="If your PDFs are password-protected, enter the password here.")
         
-        if submitted and uploaded_file is not None:
-            files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-            data = {'category': category, 'tags': tags.split(',')}
-            if pdf_password: # Add password to data if provided
-                data['password'] = pdf_password
-            if original_filepath: # Add original_filepath to data if provided
-                data['original_filepath'] = original_filepath
+        submitted = st.form_submit_button("Upload Document(s)")
+        
+        if submitted and uploaded_files:
+            files_to_send = []
+            for file in uploaded_files:
+                files_to_send.append(('files', (file.name, file.getvalue(), file.type)))
             
-            with st.spinner("Uploading and processing document... This may take a moment."):
+            data = {
+                'category': category, 
+                'tags': tags.split(',') if tags else [],
+                'password': pdf_password if pdf_password else ''
+            }
+            
+            # CRITICAL FIX: Send the full list of paths under the key expected by the backend alias.
+            # The original loop was overwriting the value. requests will correctly encode this list.
+            data['original_filepaths[]'] = original_filepaths
+
+            with st.spinner(f"Uploading and processing {len(uploaded_files)} document(s)... This may take a moment."):
                 try:
-                    response = requests.post(f"{BACKEND_URL}/upload/", files=files, data=data)
+                    response = requests.post(f"{BACKEND_URL}/upload/", files=files_to_send, data=data, headers=get_auth_headers())
                     response.raise_for_status()
-                    uploaded_document = response.json()
-                    st.success("Document uploaded successfully! The original file has been deleted from the 'uploads' folder.")
                     
-                    # Store uploaded document and potential reminders in session state
-                    st.session_state['last_uploaded_document'] = uploaded_document
-                    st.session_state['potential_reminders_to_create'] = uploaded_document.get('potential_reminders', [])
-                    st.rerun() # Rerun to display reminders outside the form
+                    response_data = response.json()
+                    
+                    if response.status_code == 200:
+                        st.success(response_data.get("message", "Documents uploaded successfully!"))
+                    elif response.status_code == 207: # Multi-Status
+                        st.warning(response_data.get("message", "Some documents failed to upload/process. Check individual statuses below."))
+                    
+                    for doc_info in response_data.get("uploaded_documents", []):
+                        if doc_info.get("status") == "failed":
+                            st.error(f"Failed to process '{doc_info.get('filename')}': {doc_info.get('detail')}. Please check the file format or content.")
+                        else:
+                            st.success(f"Successfully processed '{doc_info.get('filename')}'")
+                            # Check if extracted_text is empty and alert the user
+                            if not doc_info.get('extracted_text', '').strip():
+                                st.warning(f"⚠️ Warning: No text could be extracted from '{doc_info.get('filename')}'. This document may not be searchable.")
+                            # Store uploaded document and potential reminders in session state for the last successful upload
+                            st.session_state['last_uploaded_document'] = doc_info
+                            st.session_state['potential_reminders_to_create'] = doc_info.get('potential_reminders', [])
+                    
+                    st.rerun() # Rerun to display reminders outside the form and update document list
                 except requests.exceptions.RequestException as e:
                     error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
                     if "password-protected" in error_detail.lower() or "encrypted" in error_detail.lower():
-                        st.error(f"Error: The PDF is password-protected or encrypted. Please provide the correct password.")
+                        st.error(f"Error: One or more PDFs are password-protected or encrypted. Please provide the correct password.")
                     else:
-                        st.error(f"Error uploading document: {error_detail}")
+                        st.error(f"Error uploading documents: {error_detail}. Please ensure the backend is running and the file is valid.")
                     st.error(f"Response content: {e.response.content}")
     
     # Display potential reminders if any were found in the last upload
@@ -223,11 +331,11 @@ elif selected_action == "Upload Document":
                                 "due_date": due_datetime_str, # Send as YYYY-MM-DD string
                                 "message": reminder_data['message']
                             }
-                            rem_response = requests.post(f"{BACKEND_URL}/reminders/", json=reminder_payload)
+                            rem_response = requests.post(f"{BACKEND_URL}/reminders/", json=reminder_payload, headers=get_auth_headers())
                             rem_response.raise_for_status()
                             st.success(f"Reminder '{reminder_data['message']}' created successfully!")
                         except requests.exceptions.RequestException as rem_e:
-                            st.error(f"Error creating reminder '{reminder_data['message']}': {rem_e}")
+                            st.error(f"Failed to create reminder '{reminder_data['message']}': {rem_e}. Please try again.")
                             st.error(f"Response content: {rem_e.response.content}")
                 
                 # Clear potential reminders from session state after creation attempt
@@ -247,10 +355,10 @@ elif selected_action == "Search Documents":
     
     if st.button("Search"):
         if search_query:
-            params = {'query': search_query, 'search_type': search_type}
+            data = {'query': search_query, 'search_type': search_type}
             with st.spinner("Searching documents..."):
                 try:
-                    response = requests.get(f"{BACKEND_URL}/search/", params=params)
+                    response = requests.post(f"{BACKEND_URL}/search/", json=data, headers=get_auth_headers())
                     response.raise_for_status()
                     results = response.json()
                     
@@ -263,11 +371,13 @@ elif selected_action == "Search Documents":
                                 if result.get('original_filepath'):
                                     st.write(f"**Original Location:** `{result['original_filepath']}`")
                                 st.write(f"**Tags:** {', '.join(result.get('tags', []))}")
-                                st.text_area("Extracted Text", result.get('extracted_text', ''), height=200)
+                                st.text_area("Extracted Text", result.get('extracted_text', ''), height=200, key=f"extracted_text_{result['_id']}")
                     else:
                         st.info("No results found for your query.")
                 except requests.exceptions.RequestException as e:
-                    st.error(f"Error during search: {e}")
+                    error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                    st.error(f"Error during search: {error_detail}. Please check your query and ensure the backend is running.")
+                    st.error(f"Response content: {e.response.content}")
 
 elif selected_action == "Document Q&A":
     st.header("❓ Ask a Question About a Document")
@@ -300,13 +410,17 @@ elif selected_action == "Document Q&A":
                 with st.spinner("Getting answer from the document..."):
                     try:
                         data = {'document_id': doc_id, 'question': question}
-                        response = requests.post(f"{BACKEND_URL}/qa/", data=data)
+                        response = requests.post(f"{BACKEND_URL}/qa/", json=data, headers=get_auth_headers())
                         response.raise_for_status()
                         answer = response.json().get('answer')
                         st.markdown("### Answer")
-                        st.info(answer)
+                        if answer:
+                            st.info(str(answer)) # Ensure answer is a string
+                        else:
+                            st.warning("No answer could be retrieved for your question from this document.")
                     except requests.exceptions.RequestException as e:
-                        st.error(f"Error getting answer: {e}")
+                        error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                        st.error(f"Failed to get answer: {error_detail}. Please ensure the backend is running and the document has extracted text.")
                         st.error(f"Response content: {e.response.content}")
 
 elif selected_action == "Manage Reminders":
@@ -336,17 +450,17 @@ elif selected_action == "Manage Reminders":
             
             with st.spinner("Setting reminder..."):
                 try:
-                    response = requests.post(f"{BACKEND_URL}/reminders/", json=reminder_data)
+                    response = requests.post(f"{BACKEND_URL}/reminders/", json=reminder_data, headers=get_auth_headers())
                     response.raise_for_status()
                     st.success("Reminder set successfully!")
                     st.rerun()
                 except requests.exceptions.RequestException as e:
-                    st.error(f"Error setting reminder: {e}")
+                    st.error(f"Failed to set reminder: {e}. Please check your input and ensure the backend is running.")
                     st.error(f"Response content: {e.response.content}")
 
     st.subheader("Upcoming Reminders")
     try:
-        response = requests.get(f"{BACKEND_URL}/reminders/")
+        response = requests.get(f"{BACKEND_URL}/reminders/", headers=get_auth_headers())
         response.raise_for_status()
         reminders = response.json()
         if reminders:
@@ -357,7 +471,7 @@ elif selected_action == "Manage Reminders":
             for i, reminder in df_reminders.sort_values(by="due_date").iterrows():
                 # Ensure _id is not None before proceeding
                 if reminder.get('_id') is None:
-                    st.warning(f"Skipping malformed reminder with missing ID: {reminder.get('message', 'Unknown')}")
+                    st.warning(f"A reminder entry could not be loaded due to a missing or invalid ID. Please check the backend logs for details.")
                     continue
 
                 col1, col2, col3, col4, col5 = st.columns([0.5, 2, 1.5, 1, 1])
@@ -371,37 +485,37 @@ elif selected_action == "Manage Reminders":
                     if reminder['status'] == 'pending':
                         if st.button("Mark as Done", key=f"mark_done_{reminder['_id']}"):
                             try:
-                                response = requests.put(f"{BACKEND_URL}/reminders/{reminder['_id']}/status", json={"status": "done"})
+                                response = requests.put(f"{BACKEND_URL}/reminders/{reminder['_id']}/status", json={"status": "done"}, headers=get_auth_headers())
                                 response.raise_for_status()
                                 st.success("Reminder marked as done!")
                                 st.rerun()
                             except requests.exceptions.RequestException as e:
-                                st.error(f"Error marking reminder as done: {e}")
+                                st.error(f"Failed to mark reminder as done: {e}. Please try again.")
                     else:
                         if st.button("Mark as Pending", key=f"mark_pending_{reminder['_id']}"):
                             try:
-                                response = requests.put(f"{BACKEND_URL}/reminders/{reminder['_id']}/status", json={"status": "pending"})
+                                response = requests.put(f"{BACKEND_URL}/reminders/{reminder['_id']}/status", json={"status": "pending"}, headers=get_auth_headers())
                                 response.raise_for_status()
                                 st.success("Reminder marked as pending!")
                                 st.rerun()
                             except requests.exceptions.RequestException as e:
-                                st.error(f"Error marking reminder as pending: {e}")
+                                st.error(f"Failed to mark reminder as pending: {e}. Please try again.")
                 with col5:
                     if st.button("Delete", key=f"delete_rem_{reminder['_id']}"):
                         try:
-                            response = requests.delete(f"{BACKEND_URL}/reminders/{reminder['_id']}")
+                            response = requests.delete(f"{BACKEND_URL}/reminders/{reminder['_id']}", headers=get_auth_headers())
                             response.raise_for_status()
                             st.success("Reminder deleted successfully!")
                             st.rerun()
                         except requests.exceptions.RequestException as e:
-                            st.error(f"Error deleting reminder: {e}")
+                            st.error(f"Failed to delete reminder: {e}. Please try again.")
             
         else:
             st.info("No upcoming reminders.")
     except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching reminders: {e}")
+        st.error(f"Failed to fetch reminders: {e}. Please ensure the backend is running.")
     except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching reminders: {e}")
+        st.error(f"Failed to fetch reminders: {e}. Please ensure the backend is running.")
 
 elif selected_action == "FAISS Management":
     st.header("⚙️ FAISS Index Management")
@@ -412,23 +526,23 @@ elif selected_action == "FAISS Management":
         if st.button("Clear FAISS Index", help="This will remove all documents from the semantic search index."):
             with st.spinner("Clearing FAISS index..."):
                 try:
-                    response = requests.post(f"{BACKEND_URL}/faiss/clear")
+                    response = requests.post(f"{BACKEND_URL}/faiss/clear", headers=get_auth_headers())
                     response.raise_for_status()
                     st.success("FAISS index cleared successfully!")
                     st.rerun()
                 except requests.exceptions.RequestException as e:
-                    st.error(f"Error clearing FAISS index: {e}")
+                    st.error(f"Failed to clear FAISS index: {e}. Please ensure the backend is running.")
                     st.error(f"Response content: {e.response.content}")
     with col2:
         if st.button("Rebuild FAISS Index", help="This will re-index all documents from the database for semantic search."):
             with st.spinner("Rebuilding FAISS index from all documents..."):
                 try:
-                    response = requests.post(f"{BACKEND_URL}/faiss/rebuild")
+                    response = requests.post(f"{BACKEND_URL}/faiss/rebuild", headers=get_auth_headers())
                     response.raise_for_status()
                     st.success("FAISS index rebuilt successfully!")
                     st.rerun()
                 except requests.exceptions.RequestException as e:
-                    st.error(f"Error rebuilding FAISS index: {e}")
+                    st.error(f"Failed to rebuild FAISS index: {e}. Please ensure the backend is running.")
                     st.error(f"Response content: {e.response.content}")
 
 elif selected_action == "Backup Data":
@@ -442,12 +556,12 @@ elif selected_action == "Backup Data":
         if backup_folder_path:
             with st.spinner("Backing up documents..."):
                 try:
-                    response = requests.post(f"{BACKEND_URL}/backup/documents", json={"backup_path": backup_folder_path})
+                    response = requests.post(f"{BACKEND_URL}/backup/documents", json={"backup_path": backup_folder_path}, headers=get_auth_headers())
                     response.raise_for_status()
                     st.success(response.json().get("message", "Backup initiated successfully!"))
                 except requests.exceptions.RequestException as e:
                     error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
-                    st.error(f"Error during backup: {error_detail}")
+                    st.error(f"Failed to initiate backup: {error_detail}. Please check the backup path and backend logs.")
                     st.error(f"Response content: {e.response.content}")
         else:
             st.warning("Please provide a backup folder path.")
@@ -457,7 +571,7 @@ elif selected_action == "Manage Uploaded Files":
     st.write("Here you can view and manually delete files that are currently in the 'uploads' directory. These are temporary files that were not automatically deleted or are awaiting processing.")
 
     try:
-        response = requests.get(f"{BACKEND_URL}/files/uploaded")
+        response = requests.get(f"{BACKEND_URL}/files/uploaded", headers=get_auth_headers())
         response.raise_for_status()
         uploaded_files = response.json()
 
@@ -471,18 +585,18 @@ elif selected_action == "Manage Uploaded Files":
                 with col2:
                     if st.button(f"Delete {filename}", key=f"delete_uploaded_{filename}", help="Permanently delete this file from the 'uploads' directory."):
                         try:
-                            delete_response = requests.delete(f"{BACKEND_URL}/files/uploaded/{filename}")
+                            delete_response = requests.delete(f"{BACKEND_URL}/files/uploaded/{filename}", headers=get_auth_headers())
                             delete_response.raise_for_status()
                             st.success(f"File '{filename}' deleted successfully!")
                             st.rerun() # Refresh the page to update the list
                         except requests.exceptions.RequestException as e:
-                            st.error(f"Error deleting file '{filename}': {e}")
+                            st.error(f"Failed to delete file '{filename}': {e}. Please try again or check backend logs.")
                             st.error(f"Response content: {e.response.content}")
         else:
             st.info("No files found in the 'uploads' directory.")
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching uploaded files: {e}")
+        st.error(f"Failed to fetch uploaded files: {e}. Please ensure the backend is running.")
         st.error(f"Response content: {e.response.content}")
 
 elif selected_action == "Chat with AI":
@@ -490,10 +604,14 @@ elif selected_action == "Chat with AI":
     st.write("Engage in a conversation with the AI about your documents and other data.")
 
     # Initialize session state for current conversation if not present
+    # Initialize session state for current conversation if not present
     if 'current_conversation_id' not in st.session_state:
         st.session_state['current_conversation_id'] = None
     if 'current_conversation_title' not in st.session_state:
         st.session_state['current_conversation_title'] = "New Chat"
+
+    # Removed debug prints for cleaner UI, as backend logs are now detailed.
+    # DEBUG: Initial current_conversation_id: {st.session_state['current_conversation_id']}
 
     # Sidebar for conversation selection
     st.sidebar.subheader("Your Conversations")
@@ -501,11 +619,12 @@ elif selected_action == "Chat with AI":
     # Fetch conversations
     conversations = []
     try:
-        response = requests.get(f"{BACKEND_URL}/conversations/")
+        response = requests.get(f"{BACKEND_URL}/conversations/", headers=get_auth_headers())
         response.raise_for_status()
         conversations = response.json()
+        # DEBUG: Fetched conversations from backend: {conversations}
     except requests.exceptions.RequestException as e:
-        st.sidebar.error(f"Error fetching conversations: {e}")
+        st.sidebar.error(f"Failed to fetch conversations: {e}. Please ensure the backend is running.")
 
     conversation_options = {"New Chat": None}
     if conversations:
@@ -517,24 +636,33 @@ elif selected_action == "Chat with AI":
             elif not isinstance(conv_id, str):
                 continue # Skip malformed conversation IDs
 
-            conversation_options[f"{conv.get('title', 'Untitled')} (ID: {conv_id[:4]}...)"] = conv_id
+            # Use the full conv_id for uniqueness in the display string
+            display_key = f"{conv.get('title', 'Untitled')} (ID: {conv_id})"
+            conversation_options[display_key] = conv_id
+    # DEBUG: Constructed conversation_options: {conversation_options}
+
+    # Determine the initial index for the selectbox
+    initial_index = 0
+    if st.session_state['current_conversation_id'] in conversation_options.values():
+        initial_index = list(conversation_options.values()).index(st.session_state['current_conversation_id'])
+    # DEBUG: Initial selectbox index: {initial_index}
+
+    def update_conversation_selection():
+        selected_key = st.session_state.conversation_selector_key
+        st.session_state['current_conversation_id'] = conversation_options[selected_key]
+        st.session_state['current_conversation_title'] = selected_key.split(' (ID:')[0] if st.session_state['current_conversation_id'] else "New Chat"
+        st.rerun() # Rerun to load new conversation messages
 
     # Selectbox for conversations
     selected_conv_display = st.sidebar.selectbox(
         "Select or create a conversation",
         list(conversation_options.keys()),
-        index=0 if st.session_state['current_conversation_id'] is None else 
-              list(conversation_options.values()).index(st.session_state['current_conversation_id']) if st.session_state['current_conversation_id'] in list(conversation_options.values()) else 0
+        index=initial_index,
+        key="conversation_selector_key", # Add a unique key
+        on_change=update_conversation_selection # Use a callback
     )
+    # DEBUG: Selected conversation display: {selected_conv_display}
     
-    new_selected_conv_id = conversation_options[selected_conv_display]
-
-    # Update current conversation if selection changes
-    if new_selected_conv_id != st.session_state['current_conversation_id']:
-        st.session_state['current_conversation_id'] = new_selected_conv_id
-        st.session_state['current_conversation_title'] = selected_conv_display.split(' (ID:')[0] if new_selected_conv_id else "New Chat"
-        st.rerun() # Rerun to load new conversation messages
-
     # Display current conversation title
     st.subheader(f"Conversation: {st.session_state['current_conversation_title']}")
 
@@ -545,11 +673,22 @@ elif selected_action == "Chat with AI":
     messages = []
     if st.session_state['current_conversation_id']:
         try:
-            response = requests.get(f"{BACKEND_URL}/conversations/{st.session_state['current_conversation_id']}/messages")
+            response = requests.get(f"{BACKEND_URL}/conversations/{st.session_state['current_conversation_id']}/messages", headers=get_auth_headers())
             response.raise_for_status()
-            messages = response.json()
+            # Check if response content is empty or malformed
+            if not response.text.strip():
+                st.warning("Received empty response for messages. This might indicate no messages or a backend issue.")
+                messages = []
+            else:
+                messages = response.json()
+            
+            # DEBUG: Raw response text for messages: {response.text}
+            # DEBUG: Fetched messages for current conversation: {messages}
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching messages: {e}")
+            st.error(f"Failed to fetch messages for this conversation: {e}. Please ensure the backend is running.")
+        except json.JSONDecodeError as e:
+            st.error(f"Failed to decode messages from backend: {e}. Raw response: {response.text}. Please check backend logs.")
+            messages = []
     
     for msg in messages:
         with chat_container:
@@ -568,22 +707,34 @@ elif selected_action == "Chat with AI":
                 
                 # If "New Chat" is selected, create a new conversation first
                 if conversation_id_to_use is None:
-                    create_conv_response = requests.post(f"{BACKEND_URL}/conversations/", json={"title": "New Chat"})
+                    create_conv_response = requests.post(f"{BACKEND_URL}/conversations/", json={"title": "New Chat"}, headers=get_auth_headers())
                     create_conv_response.raise_for_status()
                     new_conv = create_conv_response.json()
-                    conversation_id_to_use = new_conv['id']
+                    # The backend returns '_id' as per Pydantic alias, not 'id'
+                    conversation_id_to_use = new_conv['_id'] 
                     st.session_state['current_conversation_id'] = conversation_id_to_use
                     st.session_state['current_conversation_title'] = new_conv['title']
                     st.success("New conversation created!")
                 
-                # Send message
+                # Send user message to backend and get AI response
                 message_payload = {"message": user_input}
-                response = requests.post(f"{BACKEND_URL}/conversations/{conversation_id_to_use}/messages", json=message_payload)
+                response = requests.post(
+                    f"{BACKEND_URL}/conversations/{conversation_id_to_use}/send", # Corrected endpoint to /send
+                    json=message_payload,
+                    headers=get_auth_headers()
+                )
                 response.raise_for_status()
-                st.rerun() # Refresh to show new messages
+                
+                # The backend /conversations/{conversation_id}/messages endpoint returns the AI's ChatMessage object
+                # The frontend should just trigger a rerun to fetch all messages again.
+                st.rerun()
             except requests.exceptions.RequestException as e:
-                st.error(f"Error sending message: {e}")
+                error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                st.error(f"Failed to send message: {error_detail}. Please try again or check backend logs.")
                 st.error(f"Response content: {e.response.content}")
+            except Exception as e:
+                st.error(f"An unexpected error occurred: {e}. Please try again.")
+                st.error(f"Error details: {e}")
 
     # Conversation management buttons
     if st.session_state['current_conversation_id']:
@@ -594,32 +745,180 @@ elif selected_action == "Chat with AI":
             if st.button("Delete Current Conversation", help="This will delete the entire conversation history."):
                 if st.session_state['current_conversation_id']:
                     try:
-                        response = requests.delete(f"{BACKEND_URL}/conversations/{st.session_state['current_conversation_id']}")
+                        response = requests.delete(f"{BACKEND_URL}/conversations/{st.session_state['current_conversation_id']}", headers=get_auth_headers())
                         response.raise_for_status()
                         st.success("Conversation deleted successfully!")
                         st.session_state['current_conversation_id'] = None
                         st.session_state['current_conversation_title'] = "New Chat"
                         st.rerun()
                     except requests.exceptions.RequestException as e:
-                        st.error(f"Error deleting conversation: {e}")
+                        error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                        st.error(f"Failed to delete conversation: {error_detail}. Please try again or check backend logs.")
                         st.error(f"Response content: {e.response.content}")
         with col_del_msg:
             if messages:
+                # Create a list of display strings for the selectbox
+                message_display_options = [
+                    f"{msg['sender'].capitalize()}: {msg['message'][:70]}{'...' if len(msg['message']) > 70 else ''} (ID: {msg['_id']})"
+                    for msg in messages
+                ]
+                # Map display string back to original message object or ID
+                message_map = {
+                    f"{msg['sender'].capitalize()}: {msg['message'][:70]}{'...' if len(msg['message']) > 70 else ''} (ID: {msg['_id']})": msg['_id']
+                    for msg in messages
+                }
+
                 message_to_delete_display = st.selectbox(
                     "Select a message to delete",
-                    [f"{msg['sender']}: {msg['message'][:50]}..." for msg in messages],
+                    message_display_options,
                     key="delete_msg_select"
                 )
-                if st.button("Delete Selected Message"):
-                    selected_msg_index = [f"{msg['sender']}: {msg['message'][:50]}..." for msg in messages].index(message_to_delete_display)
-                    message_id_to_delete = messages[selected_msg_index]['_id']
-                    try:
-                        response = requests.delete(f"{BACKEND_URL}/messages/{message_id_to_delete}")
-                        response.raise_for_status()
-                        st.success("Message deleted successfully!")
-                        st.rerun()
-                    except requests.exceptions.RequestException as e:
-                        st.error(f"Error deleting message: {e}")
-                        st.error(f"Response content: {e.response.content}")
+                
+                if st.button("Delete Selected Message", key="confirm_delete_msg_button"):
+                    if message_to_delete_display:
+                        message_id_to_delete = message_map[message_to_delete_display]
+                        try:
+                            response = requests.delete(f"{BACKEND_URL}/messages/{message_id_to_delete}", headers=get_auth_headers())
+                            response.raise_for_status()
+                            st.success("Message deleted successfully!")
+                            st.rerun()
+                        except requests.exceptions.RequestException as e:
+                            error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                            st.error(f"Failed to delete message: {error_detail}. Please try again or check backend logs.")
+                            st.error(f"Response content: {e.response.content}")
             else:
-                st.info("No messages to delete in this conversation.")
+                st.info("No messages in this conversation to delete.")
+
+elif selected_action == "Admin Feedback":
+    st.header("🧑‍💻 Admin Document Feedback")
+    st.write("Review and manage feedback provided for documents to improve AI performance.")
+
+    try:
+        response = requests.get(f"{BACKEND_URL}/admin/feedback/", headers=get_auth_headers())
+        response.raise_for_status()
+        feedback_entries = response.json()
+
+        if feedback_entries:
+            st.subheader("All Document Feedback Entries")
+            for feedback in feedback_entries:
+                with st.expander(f"Feedback for Document ID: {feedback['document_id']} (Type: {feedback['feedback_type']})"):
+                    st.write(f"**Feedback ID:** {feedback['_id']}")
+                    st.write(f"**Admin User ID:** {feedback['user_id']}")
+                    st.write(f"**Feedback Type:** {feedback['feedback_type']}")
+                    if feedback.get('field_name'):
+                        st.write(f"**Field Name:** {feedback['field_name']}")
+                    if feedback.get('chunk_id'):
+                        st.write(f"**Chunk ID:** {feedback['chunk_id']}")
+                    if feedback.get('original_content'):
+                        st.text_area("Original Content", feedback['original_content'], height=100, key=f"original_{feedback['_id']}")
+                    if feedback.get('corrected_content'):
+                        st.text_area("Corrected Content", feedback['corrected_content'], height=100, key=f"corrected_{feedback['_id']}")
+                    if feedback.get('notes'):
+                        st.text_area("Notes", feedback['notes'], height=100, key=f"notes_{feedback['_id']}")
+                    st.write(f"**Created At:** {datetime.fromisoformat(feedback['created_at']).strftime('%Y-%m-%d %H:%M:%S')}")
+                    
+                    col_edit, col_delete = st.columns(2)
+                    with col_edit:
+                        if st.button("Edit Feedback", key=f"edit_feedback_{feedback['_id']}"):
+                            st.session_state['edit_feedback_id'] = feedback['_id']
+                            st.session_state['edit_feedback_data'] = feedback
+                            st.rerun()
+                    with col_delete:
+                        if st.button("Delete Feedback", key=f"delete_feedback_{feedback['_id']}"):
+                            try:
+                                delete_response = requests.delete(f"{BACKEND_URL}/admin/feedback/{feedback['_id']}", headers=get_auth_headers())
+                                delete_response.raise_for_status()
+                                st.success(f"Feedback {feedback['_id']} deleted successfully!")
+                                st.rerun()
+                            except requests.exceptions.RequestException as e:
+                                error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                                st.error(f"Failed to delete feedback: {error_detail}")
+                                st.error(f"Response content: {e.response.content}")
+        else:
+            st.info("No document feedback entries found.")
+
+    except requests.exceptions.RequestException as e:
+        error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+        st.error(f"Failed to fetch feedback entries: {error_detail}. Please ensure the backend is running and you are logged in as an admin.")
+        st.error(f"Response content: {e.response.content}")
+
+    st.subheader("Submit New Feedback")
+    with st.form("new_feedback_form", clear_on_submit=True):
+        documents = get_documents()
+        doc_options = {f"{doc['filename']} (ID: {doc['_id']})": doc['_id'] for doc in documents}
+        selected_doc_display = st.selectbox("Select Document", list(doc_options.keys()), key="new_feedback_doc_select")
+        selected_doc_id = doc_options[selected_doc_display] if selected_doc_display else None
+
+        feedback_type = st.selectbox("Feedback Type", ["OCR_CORRECTION", "SUMMARY_ADJUSTMENT", "CATEGORY_ADJUSTMENT", "TAG_ADJUSTMENT", "PII_VALIDATION", "QA_CORRECTION", "OTHER"], key="new_feedback_type")
+        field_name = st.text_input("Field Name (e.g., extracted_text, summary, category, tags, extracted_info.name)", key="new_feedback_field_name")
+        original_content = st.text_area("Original Content (if applicable)", key="new_feedback_original_content")
+        corrected_content = st.text_area("Corrected Content", key="new_feedback_corrected_content")
+        notes = st.text_area("Notes", key="new_feedback_notes")
+
+        submitted = st.form_submit_button("Submit Feedback")
+
+        if submitted:
+            if not selected_doc_id or not corrected_content:
+                st.error("Document and corrected content are required.")
+            else:
+                feedback_payload = {
+                    "document_id": selected_doc_id,
+                    "feedback_type": feedback_type,
+                    "field_name": field_name if field_name else None,
+                    "original_content": original_content if original_content else None,
+                    "corrected_content": corrected_content,
+                    "notes": notes if notes else None
+                }
+                try:
+                    response = requests.post(f"{BACKEND_URL}/admin/feedback/", json=feedback_payload, headers=get_auth_headers())
+                    response.raise_for_status()
+                    st.success("Feedback submitted successfully!")
+                    st.rerun()
+                except requests.exceptions.RequestException as e:
+                    error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                    st.error(f"Failed to submit feedback: {error_detail}")
+                    st.error(f"Response content: {e.response.content}")
+
+    # Edit Feedback Form (appears when 'Edit Feedback' button is clicked)
+    if 'edit_feedback_id' in st.session_state and st.session_state['edit_feedback_id']:
+        st.subheader(f"Edit Feedback Entry: {st.session_state['edit_feedback_id']}")
+        feedback_to_edit = st.session_state['edit_feedback_data']
+
+        with st.form("edit_feedback_form", clear_on_submit=False):
+            # Pre-fill fields with existing data
+            edit_feedback_type = st.selectbox("Feedback Type", ["OCR_CORRECTION", "SUMMARY_ADJUSTMENT", "CATEGORY_ADJUSTMENT", "TAG_ADJUSTMENT", "PII_VALIDATION", "QA_CORRECTION", "OTHER"], index=["OCR_CORRECTION", "SUMMARY_ADJUSTMENT", "CATEGORY_ADJUSTMENT", "TAG_ADJUSTMENT", "PII_VALIDATION", "QA_CORRECTION", "OTHER"].index(feedback_to_edit['feedback_type']), key="edit_feedback_type")
+            edit_field_name = st.text_input("Field Name", value=feedback_to_edit.get('field_name', ''), key="edit_feedback_field_name")
+            edit_original_content = st.text_area("Original Content", value=feedback_to_edit.get('original_content', ''), key="edit_feedback_original_content")
+            edit_corrected_content = st.text_area("Corrected Content", value=feedback_to_edit.get('corrected_content', ''), key="edit_feedback_corrected_content")
+            edit_notes = st.text_area("Notes", value=feedback_to_edit.get('notes', ''), key="edit_feedback_notes")
+
+            col_update, col_cancel = st.columns(2)
+            with col_update:
+                if st.form_submit_button("Update Feedback"):
+                    if not edit_corrected_content:
+                        st.error("Corrected content is required.")
+                    else:
+                        update_payload = {
+                            "document_id": feedback_to_edit['document_id'], # Document ID remains the same
+                            "feedback_type": edit_feedback_type,
+                            "field_name": edit_field_name if edit_field_name else None,
+                            "original_content": edit_original_content if edit_original_content else None,
+                            "corrected_content": edit_corrected_content,
+                            "notes": edit_notes if edit_notes else None
+                        }
+                        try:
+                            response = requests.put(f"{BACKEND_URL}/admin/feedback/{st.session_state['edit_feedback_id']}", json=update_payload, headers=get_auth_headers())
+                            response.raise_for_status()
+                            st.success("Feedback updated successfully!")
+                            del st.session_state['edit_feedback_id']
+                            del st.session_state['edit_feedback_data']
+                            st.rerun()
+                        except requests.exceptions.RequestException as e:
+                            error_detail = e.response.json().get("detail", str(e)) if e.response else str(e)
+                            st.error(f"Failed to update feedback: {error_detail}")
+                            st.error(f"Response content: {e.response.content}")
+            with col_cancel:
+                if st.form_submit_button("Cancel Edit"):
+                    del st.session_state['edit_feedback_id']
+                    del st.session_state['edit_feedback_data']
+                    st.rerun()

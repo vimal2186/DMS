@@ -1,0 +1,81 @@
+# Summary of Work Performed (October 28, 2025)
+
+This document details the enhancements and debugging efforts undertaken to improve the Document Management System (DMS) since the last major update.
+
+## 1. Admin Document Feedback System (Human-in-the-Loop Training)
+
+A new admin-level feature has been implemented to allow human feedback for document training, aiming to continuously improve AI performance.
+
+### 1.1. Data Model Design (`backend/models.py`)
+-   **`FeedbackType` Enum**: Introduced an enumeration to categorize different types of feedback:
+    -   `OCR_CORRECTION`
+    -   `SUMMARY_ADJUSTMENT`
+    -   `CATEGORY_ADJUSTMENT`
+    -   `TAG_ADJUSTMENT`
+    -   `PII_VALIDATION`
+    -   `QA_CORRECTION`
+    -   `OTHER`
+-   **`DocumentFeedback` Model**: A new Pydantic model was added to store feedback entries, including:
+    -   `document_id`: Link to the parent document.
+    -   `user_id`: The admin user who provided the feedback.
+    -   `feedback_type`: Type of feedback (from `FeedbackType` enum).
+    -   `original_content`: Original text/value before correction.
+    -   `corrected_content`: Corrected text/value.
+    -   `field_name`: Specific field being corrected (e.g., "extracted_text", "summary").
+    -   `chunk_id`: If feedback is specific to a document chunk.
+    -   `notes`: Additional notes.
+    -   `created_at`: Timestamp of feedback creation.
+
+### 1.2. Backend Endpoint Development (`backend/database.py`, `backend/app.py`)
+-   **Database Collection**:
+    -   `backend/database.py` was updated to include `get_document_feedback_collection` for managing feedback entries in MongoDB.
+-   **API Endpoints**:
+    -   `backend/app.py` was modified to import the new `DocumentFeedback` model and `FeedbackType` enum.
+    -   An `get_current_admin_user` dependency was added to restrict access to admin-only routes.
+    -   The following FastAPI endpoints were implemented under the `/admin/feedback/` path:
+        -   `GET /admin/feedback/`: Retrieves all document feedback entries, sorted by creation date.
+        -   `POST /admin/feedback/`: Allows an admin to submit new feedback for a document.
+        -   `PUT /admin/feedback/{feedback_id}`: Enables updating an existing feedback entry.
+        -   `DELETE /admin/feedback/{feedback_id}`: Facilitates the deletion of a feedback entry.
+
+### 1.3. Frontend UI for Admin Interaction (`frontend/app.py`)
+-   **Sidebar Navigation**: A new "Admin Feedback" option was added to the sidebar navigation.
+-   **Feedback Display**: The "Admin Feedback" section now displays all submitted feedback entries in an expandable format, showing details like feedback ID, type, original/corrected content, and notes.
+-   **Submission Form**: A form allows admins to submit new feedback, selecting a document, feedback type, specifying field names, original/corrected content, and notes.
+-   **Edit/Delete Functionality**: Buttons are provided to edit or delete individual feedback entries, with an edit form pre-filled with existing data for convenience.
+
+### 1.4. How Feedback Improves AI Models
+The collected human feedback is crucial for the continuous improvement of the AI components:
+-   **OCR Corrections**: Used as ground truth to fine-tune or retrain OCR models.
+-   **Summary/Category/Tag Adjustments**: Utilized for fine-tuning LLMs to improve document understanding and metadata extraction.
+-   **PII Extraction Validation**: Helps refine PII extraction prompts and can be used to train dedicated Named Entity Recognition (NER) models.
+-   **Q&A Answer Quality**: Provides insights to refine the RAG system, including document chunking, embedding quality, retrieval relevance, and LLM answer generation.
+-   **General Improvements**: The feedback data serves as a valuable dataset for monitoring AI performance, identifying areas of underperformance, and enabling active learning strategies.
+
+## 2. README.md Update
+-   The `README.md` file was appended with a "Recent Updates (October 2025)" section, detailing the RAG pipeline enhancements and the newly implemented Admin Document Feedback System, along with an explanation of how feedback improves AI models.
+
+## 3. OCR Debugging and Enhancements
+
+Several steps were taken to diagnose and improve the OCR process, particularly for problematic PDF files like "PAN.pdf".
+
+### 3.1. Debugging Features in `backend/ocr.py`
+-   **Environment Variables**: Introduced `SAVE_OCR_DEBUG_IMAGES` and `OCR_DEBUG_IMAGE_DIR` to control saving of pre-processed images for debugging.
+-   **Image Saving Logic**: Added code to `extract_text_from_image` and `extract_text_from_pdf` to save the `processed_image` to the `ocr_debug_images` directory when `SAVE_OCR_DEBUG_IMAGES` is enabled.
+-   **Configurable Tesseract PSM**: Made the Tesseract Page Segmentation Mode (PSM) configurable via the `TESSERACT_PSM` environment variable, allowing for experimentation with different segmentation strategies (defaulting to 3, with tests suggested for 6 and 11).
+
+### 3.2. Logging Improvements
+-   **Centralized Logging (`backend/app.py`, `backend/ocr.py`)**:
+    -   Modified `backend/app.py` to configure a central logger that outputs to both the console and `ocr_debug.log`.
+    -   Removed the `logging.basicConfig` call from `backend/ocr.py` to prevent conflicts and ensure consistent logging.
+-   **Detailed Upload Logging (`backend/app.py`)**: Added extensive `logger.info` and `logger.error` statements within the `upload_document` function to trace the execution flow, file saving, `extract_text` calls, and error handling.
+
+### 3.3. Regex Fix (`backend/llm.py`)
+-   **`re.error` Resolution**: Fixed a `re.error: bad character range \s-.` in `backend/llm.py` within the `extract_structured_info_with_correction` function. The regex `r'[\s-.]'` was corrected to `r'[\s\-\.]'` to properly escape the hyphen, preventing it from being interpreted as a range operator.
+
+### 3.4. Troubleshooting Steps with User
+-   Guided the user through setting environment variables (`SAVE_OCR_DEBUG_IMAGES`, `ENABLE_OCR_PREPROCESSING`, `TESSERACT_PSM`) and restarting the backend server to generate debug logs and images.
+-   Requested and analyzed backend logs to identify the regex error and persistent OCR failures.
+-   Requested and analyzed the `processed_pdf_page_1_PAN.pdf.png` debug image to understand the visual input Tesseract was receiving.
+
+The debugging process revealed that while the regex issue was resolved, the OCR itself was still failing to extract text from the provided `PAN.pdf`, even with image pre-processing and different PSM settings. Further investigation into the Tesseract installation, language packs, or the inherent readability of the document for OCR might be necessary if the issue persists.

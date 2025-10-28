@@ -1,0 +1,31 @@
+# Render Blueprint for Document Management System
+
+services:
+  # Backend Service
+  - type: web
+    name: dms-backend
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn backend.app:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /docs # Or a more specific health check endpoint
+    autoDeploy: true
+    dockerfilePath: Dockerfile.backend
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true # Render will generate a secure key
+      - key: MONGO_URI
+        value: mongodb+srv://your_username:your_password@your_cluster.mongodb.net/dms_db?retryWrites=true&w=majority # Replace with your MongoDB Atlas URI
+      - key: DATABASE_NAME
+        value: dms_db
+
+  # Frontend Service (Streamlit)
+  - type: web
+    name: dms-frontend
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "streamlit run frontend/app.py --server.port $PORT --server.address 0.0.0.0"
+    autoDeploy: true
+    dockerfilePath: Dockerfile.frontend
+    envVars:
+      - key: BACKEND_URL
+        value: http://dms-backend.render.com # Replace with the actual URL of your backend service on Render

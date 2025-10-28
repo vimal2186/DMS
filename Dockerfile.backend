@@ -4,6 +4,9 @@ FROM python:3.12-slim-buster
 # Set the working directory in the container
 WORKDIR /app
 
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
 # Install system dependencies required for Tesseract and OpenCV
 # Tesseract-OCR and its language data
 # libgl1-mesa-glx for OpenCV (headless)
